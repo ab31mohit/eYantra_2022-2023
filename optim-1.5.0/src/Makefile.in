@@ -1,0 +1,111 @@
+# Makefile for optim package for Octave
+#
+# Copyright (C) 2016 Olaf Till <i7tiol@t-online.de>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, see <http://www.gnu.org/licenses/>.
+
+MKOCTFILE ?= @MKOCTFILE@
+CXX ?= @CXX@
+CXXFLAGS ?= -g -O2
+
+ifndef LAPACK_LIBS
+LAPACK_LIBS := $(shell $(MKOCTFILE) -p LAPACK_LIBS)
+endif
+OCTAVE_LAPACK_LIBS := $(shell $(MKOCTFILE) -p LAPACK_LIBS)
+# reported necessary for Apple's VecLib framework by Carlo de Falco
+# <carlo.defalco@gmail.com>
+ifndef BLAS_LIBS
+BLAS_LIBS := $(shell $(MKOCTFILE) -p BLAS_LIBS)
+endif
+OCTAVE_BLAS_LIBS := $(shell $(MKOCTFILE) -p BLAS_LIBS)
+
+# Passing LFLAGS, supplemented with LAPACK_LIBS and BLAS_LIBS, in the
+# environment to mkoctfile is prefered over passing LAPACK_LIBS and
+# BLAS_LIBS in mkoctfiles commandline due to mkoctfiles difficulties
+# with non-standard flags on some systems (e.g. -framework ... on
+# Apple)
+LFLAGS := $(shell $(MKOCTFILE) -p LFLAGS)
+OCTAVE_LFLAGS := $(LFLAGS)
+LFLAGS += $(LAPACK_LIBS)
+LFLAGS += $(BLAS_LIBS)
+OCTAVE_LFLAGS += $(OCTAVE_LAPACK_LIBS)
+OCTAVE_LFLAGS += $(OCTAVE_BLAS_LIBS)
+
+INFOFILE := ../doc/optim.info
+TEXIFILE := $(addsuffix .texi,$(basename $(INFOFILE)))
+TXIFILE := $(addsuffix .txi,$(basename $(INFOFILE)))
+HTMLDIR := ../doc/html/
+OCTFILES := __bfgsmin.oct numgradient.oct numhessian.oct samin.oct __disna_optim__.oct
+
+OCTSOURCEFILES := $(addsuffix .cc,$(basename $(OCTFILES)))
+DSFILES := $(addsuffix .docstrings,$(OCTSOURCEFILES))
+MFILES := $(wildcard *.m) $(wildcard ../inst/*.m)
+
+.PHONY: all clean doc release html
+
+.INTERMEDIATE: MFDOCSTRINGS $(DSFILES)
+
+all: doc $(OCTFILES)
+
+release: doc html
+
+error-helpers.o: error-helpers.cc error-helpers.h
+	CXX=$(CXX) CXXFLAGS="$(CXXFLAGS)" $(MKOCTFILE) -c error-helpers.cc
+
+# __disna_optim__ should be linked to the same Lapack library as used by Octave
+__disna_optim__.oct: __disna_optim__.cc error-helpers.h config.h error-helpers.o
+	CXX=$(CXX) CXXFLAGS="$(CXXFLAGS)" LFLAGS="$(OCTAVE_LFLAGS)" $(MKOCTFILE) __disna_optim__.cc error-helpers.o
+
+%.oct: %.cc error-helpers.h config.h error-helpers.o
+	CXX=$(CXX) CXXFLAGS="$(CXXFLAGS)" LFLAGS="$(LFLAGS)" $(MKOCTFILE) $< error-helpers.o
+
+doc: $(INFOFILE)
+
+$(INFOFILE): $(TEXIFILE)
+	makeinfo $(TEXIFILE) -o $(INFOFILE)
+
+html: $(TEXIFILE)
+	makeinfo --html -o $(HTMLDIR) $(TEXIFILE)
+
+$(TEXIFILE): $(TXIFILE) MFDOCSTRINGS $(DSFILES) munge-texi.pl
+	./munge-texi.pl MFDOCSTRINGS $(DSFILES) < $(TXIFILE) > $(TEXIFILE)
+
+MFDOCSTRINGS: $(MFILES) mkdoc.pl
+	./mkdoc.pl $(MFILES) > MFDOCSTRINGS
+
+# take long CPP macro names, unlikely to be present in package code
+# (which is checked) or to be defined by Octave (which can't be
+# checked)
+RDEFUN_DLD := DEFUN_DLD_REPLACEMENT_FOR_PACKAGE_DOCS
+RDEFUNX_DLD := DEFUNX_DLD_REPLACEMENT_FOR_PACKAGE_DOCS
+%.cc.docstrings: %.ii
+	(echo -n "### This file is generated automatically from the\n### corresponding .cc file by a Makefile rule.\n\n"; sed -e '/.*$(RDEFUN_DLD)/!D' -e 's/.*$(RDEFUN_DLD)(\([^,]\+\),"\(.\+\)\(\\n\)*")$$/\x1D\1\n@c \1 $(addsuffix .cc,$(basename $<))\n\2/' -e 's/\\n/\n/g' $<) > $@
+# Explanation of the command after the checks: Macro names are changed
+# by `sed' so that a different definition can be given to them on the
+# `cpp' commandline. After running the `cpp' command, one can be sure
+# that there are not more than one `$(RDEFUN_DLD)' resulting from a
+# DEFUN(X)_DLD invocation in the original code at one line, that every
+# occurance of `$(RDEFUN_DLD)' indeed corresponds to an original macro
+# invocation, and not to `DEFUN(X)_DLD' within a comment or a string,
+# and that we have all necessary information within one line of
+# text. The package code is expected to give the function
+# documentation as a string constant directly in the macro invocation,
+# as is normally done.
+%.ii: %.cc
+	if grep -q $(RDEFUN_DLD) $<; then echo "The string '$(RDEFUN_DLD)' must not be present in source code, but is in $<."; exit 1; fi
+	if grep -q $(RDEFUNX_DLD) $<; then echo "The string '$(RDEFUNX_DLD)' must not be present in source code, but is in $<."; exit 1; fi
+	sed -e s/DEFUN_DLD/$(RDEFUN_DLD)/g -e s/DEFUNX_DLD/$(RDEFUNX_DLD)/g $< | $(CPP) `$(MKOCTFILE) -p INCFLAGS` -x c++ -iquote '.' -D'$(RDEFUN_DLD)(name,args,nargout,doc)=$(RDEFUN_DLD)(name,doc)' -D'$(RDEFUNX_DLD)(name,fname,gname,args,nargout,doc)=$(RDEFUN_DLD)(name,doc)' - > $@
+
+clean:
+	$(RM) *.o octave-core *.oct *.cc.docstrings MFDOCSTRINGS $(INFOFILE) $(TEXIFILE) *~

@@ -1,0 +1,10 @@
+name: DB_3925
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - opencv
+  - matplotlib
+  - numpy
+  - python=3.8.*
+  - oct2py
